@@ -1,0 +1,54 @@
+name: nixpkgs sync with cooldown
+
+on:
+  schedule:
+    - cron: '0 15 * * *' # 12:00 KST
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BRANCHES: >-
+    nixos-unstable
+    nixos-unstable-small
+    nixpkgs-unstable
+    nixos-26.05
+
+jobs:
+  sync-cooldown:
+    runs-on: ubuntu-latest
+    steps:
+      - name: apply cooldown and sync
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p upstream
+          cd upstream
+          git init
+          git remote add upstream https://github.com/NixOS/nixpkgs.git
+          git remote add origin https://x-access-token:${GH_TOKEN}@github.com/"${GITHUB_REPOSITORY}".git
+
+          CUTOFF=$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%S')
+          echo "cutoff (UTC): $CUTOFF"
+
+          for BRANCH in $BRANCHES; do
+            echo "=== processing ${BRANCH} ==="
+
+            echo "fetching ${BRANCH}..."
+            git fetch --shallow-since="14 days ago" upstream "$BRANCH" --no-tags
+
+            TARGET_COMMIT=$(git rev-list -1 --before="$CUTOFF" "upstream/${BRANCH}")
+
+            if [ -z "$TARGET_COMMIT" ]; then
+              echo "no commit found before cutoff for ${BRANCH}, skipping."
+              continue
+            fi
+
+            echo "target commit for ${BRANCH}: $TARGET_COMMIT"
+            git log -1 --format='%H %ci %s' "$TARGET_COMMIT"
+
+            git push --force origin "${TARGET_COMMIT}:refs/heads/${BRANCH}"
+          done
